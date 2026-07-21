@@ -372,7 +372,40 @@ export default function App() {
     const job = jobs.find(j => j.id === jobId);
     if (!job) return;
 
-    setJobs(prev => prev.map(j => j.id === jobId ? { ...j, status: "fetching", error: undefined, progress: 0 } : j));
+    // Set job state to downloading immediately to show active progress feedback
+    setJobs(prev => prev.map(j => j.id === jobId ? { 
+      ...j, 
+      status: "downloading", 
+      error: undefined, 
+      progress: 5, 
+      speed: "Connecting..." 
+    } : j));
+
+    // Clear any existing progress intervals for this job
+    if (downloadIntervals.current[jobId]) {
+      clearInterval(downloadIntervals.current[jobId]);
+    }
+
+    // Start a realistic slow progress simulation to keep the user engaged
+    // while the server-side downloads and post-processing take place
+    let currentProgress = 5;
+    const interval = setInterval(() => {
+      if (currentProgress < 92) {
+        // Slowly increment up to 92%
+        const increment = Math.floor(Math.random() * 3) + 1; // 1-3% increments
+        currentProgress += increment;
+        if (currentProgress > 92) currentProgress = 92;
+
+        const currentSpeed = (2.5 + Math.random() * 5.5).toFixed(1) + " MB/s";
+        setJobs(prev => prev.map(j => j.id === jobId ? { 
+          ...j, 
+          progress: currentProgress, 
+          speed: currentSpeed 
+        } : j));
+      }
+    }, 400);
+
+    downloadIntervals.current[jobId] = interval;
 
     try {
       const response = await fetch("/api/download", {
@@ -395,78 +428,48 @@ export default function App() {
 
       const downloadResult = await response.json();
 
-      // Check for direct, success or redirect status
-      let finalDownloadUrl = downloadResult.url;
-      let pickerItems = downloadResult.picker;
+      // Clear the slow progress simulation interval
+      clearInterval(interval);
+      delete downloadIntervals.current[jobId];
 
-      // Update state to downloading and initiate high-fidelity progress animation
-      setJobs(prev => prev.map(j => {
-        if (j.id === jobId) {
-          return {
-            ...j,
-            status: "downloading",
-            downloadUrl: finalDownloadUrl,
-            pickerItems: pickerItems
-          };
-        }
-        return j;
-      }));
+      const finalDownloadUrl = downloadResult.url;
+      const pickerItems = downloadResult.picker;
 
-      // Initiate realistic download sequence simulation
-      startProgressSimulation(jobId, finalDownloadUrl, job.fileName || "downloaded-media", job.sizeBytes);
+      // Fast-forward progress to 100% and set status to completed
+      setJobs(prev => prev.map(j => j.id === jobId ? {
+        ...j,
+        status: "completed",
+        progress: 100,
+        speed: "Done",
+        downloadUrl: finalDownloadUrl,
+        pickerItems: pickerItems
+      } : j));
+
+      // Calculate and save metrics
+      const totalSize = job.sizeBytes || 5 * 1024 * 1024;
+      const fileMb = totalSize / (1024 * 1024);
+      setTotalDataSaved(prev => prev + fileMb);
+
+      // Attempt to automatically save the file in the browser (might be blocked by iframe sandboxes)
+      triggerBrowserSave(finalDownloadUrl, job.fileName || "downloaded-media");
 
     } catch (err: any) {
+      // Clear interval on failure
+      clearInterval(interval);
+      delete downloadIntervals.current[jobId];
+
       setJobs(prev => prev.map(j => j.id === jobId ? { 
         ...j, 
         status: "failed", 
-        error: err.message || "Failed to compile media format." 
+        error: err.message || "Failed to download media format.",
+        progress: 0
       } : j));
     }
   };
 
-  // Progress simulation that outputs visual chunk speeds, files sizes, and triggers browser file save
+  // Legacy progress simulation wrapper for compatibility with batch triggers
   const startProgressSimulation = (jobId: string, downloadUrl: string, fileName: string, sizeBytes: number) => {
-    if (downloadIntervals.current[jobId]) {
-      clearInterval(downloadIntervals.current[jobId]);
-    }
-
-    let progress = 0;
-    const totalSize = sizeBytes || 5 * 1024 * 1024; // fallback to 5MB
-
-    const interval = setInterval(() => {
-      progress += Math.floor(Math.random() * 8) + 4; // increment 4% to 12%
-      
-      if (progress >= 100) {
-        progress = 100;
-        clearInterval(interval);
-        delete downloadIntervals.current[jobId];
-
-        // Mark as completed
-        setJobs(prev => prev.map(j => j.id === jobId ? { 
-          ...j, 
-          status: "completed", 
-          progress: 100,
-          speed: "Done" 
-        } : j));
-
-        // Increment data saved
-        const fileMb = totalSize / (1024 * 1024);
-        setTotalDataSaved(prev => prev + fileMb);
-
-        // Initiate client-side save using our CORS proxy endpoint
-        triggerBrowserSave(downloadUrl, fileName);
-      } else {
-        // Calculate random speed fluctuation (e.g. 3.2 MB/s to 12.5 MB/s)
-        const currentSpeed = (3.5 + Math.random() * 8.5).toFixed(1) + " MB/s";
-        setJobs(prev => prev.map(j => j.id === jobId ? { 
-          ...j, 
-          progress: progress, 
-          speed: currentSpeed 
-        } : j));
-      }
-    }, 250);
-
-    downloadIntervals.current[jobId] = interval;
+    // This is handled natively inside triggerDownload now. Left as a fallback no-op if called from elsewhere.
   };
 
   // Helper to trigger standard browser download file saving via proxy
@@ -1232,6 +1235,13 @@ export default function App() {
                           </p>
                         )}
 
+                        {/* Display browser-save assistance for completed files */}
+                        {job.status === "completed" && (
+                          <p className="text-[10px] text-emerald-700 leading-relaxed bg-emerald-50/60 p-2 rounded border border-emerald-100">
+                            🎉 <b>Download complete on server!</b> If your browser blocked the automatic save, click the <b>Save File to Device</b> button below to download.
+                          </p>
+                        )}
+
                       </div>
                     )}
 
@@ -1244,8 +1254,8 @@ export default function App() {
 
                       {job.status === "ready" && (
                         <button
-                          onClick={() => triggerDownload(job.id)}
-                          className="bg-black hover:bg-gray-800 text-white text-xs font-medium py-2 px-4 rounded-lg flex items-center space-x-1.5 transition-colors cursor-pointer shadow-sm"
+                           onClick={() => triggerDownload(job.id)}
+                           className="bg-black hover:bg-gray-800 text-white text-xs font-medium py-2 px-4 rounded-lg flex items-center space-x-1.5 transition-colors cursor-pointer shadow-sm"
                         >
                           <Download className="w-3.5 h-3.5" />
                           <span>Generate Download Link</span>
@@ -1287,17 +1297,21 @@ export default function App() {
                             </button>
                           )}
                           
-                          <button
-                            onClick={() => {
-                              if (job.downloadUrl) {
-                                triggerBrowserSave(job.downloadUrl, job.fileName || "media");
+                          {/* Direct user-initiated download link which bypasses sandbox/CORS restrictions */}
+                          {job.downloadUrl && (
+                            <a
+                              href={
+                                job.downloadUrl.startsWith("/")
+                                  ? `${job.downloadUrl}&filename=${encodeURIComponent(job.fileName || "media")}`
+                                  : `/api/proxy-download?url=${encodeURIComponent(job.downloadUrl)}&filename=${encodeURIComponent(job.fileName || "media")}`
                               }
-                            }}
-                            className="bg-emerald-50 hover:bg-emerald-100/80 text-emerald-700 border border-emerald-200 text-xs font-medium py-1.5 px-3 rounded-lg flex items-center space-x-1.5 transition-all cursor-pointer"
-                          >
-                            <Download className="w-3.5 h-3.5" />
-                            <span>Save File Again</span>
-                          </button>
+                              download={job.fileName || "downloaded-media"}
+                              className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold py-1.5 px-3.5 rounded-lg flex items-center space-x-1.5 transition-all shadow-sm cursor-pointer hover:scale-[1.02] active:scale-[0.98]"
+                            >
+                              <Download className="w-3.5 h-3.5 animate-bounce" />
+                              <span>Save File to Device</span>
+                            </a>
+                          )}
                         </>
                       )}
 

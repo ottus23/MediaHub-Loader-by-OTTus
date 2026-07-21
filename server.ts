@@ -52,7 +52,9 @@ function normalizeUrlForYtDlp(url: string): string {
       const match = parsed.pathname.match(/\/(\d+)(?:\/|\?|$)/);
       if (match) {
         const videoId = match[1];
-        return `https://player.vimeo.com/video/${videoId}`;
+        const h = parsed.searchParams.get("h");
+        const query = h ? `?h=${h}` : parsed.search;
+        return `https://player.vimeo.com/video/${videoId}${query}`;
       }
     }
   } catch (err) {
