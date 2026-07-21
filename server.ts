@@ -3,6 +3,11 @@ import path from "path";
 import { createServer as createViteServer } from "vite";
 import { Readable } from "stream";
 import dotenv from "dotenv";
+import { execFile } from "child_process";
+import { promisify } from "util";
+import fs from "fs";
+
+const execFileAsync = promisify(execFile);
 
 dotenv.config();
 
@@ -10,6 +15,100 @@ const app = express();
 const PORT = 3000;
 
 app.use(express.json());
+
+const DOWNLOADS_DIR = "/tmp/downloads";
+if (!fs.existsSync(DOWNLOADS_DIR)) {
+  fs.mkdirSync(DOWNLOADS_DIR, { recursive: true });
+}
+
+// Clean up files in /tmp/downloads older than 15 minutes
+function cleanOldDownloads() {
+  try {
+    const files = fs.readdirSync(DOWNLOADS_DIR);
+    const now = Date.now();
+    const expiryTime = 15 * 60 * 1000; // 15 minutes
+    
+    for (const file of files) {
+      if (file === "." || file === "..") continue;
+      const filePath = path.join(DOWNLOADS_DIR, file);
+      if (fs.existsSync(filePath)) {
+        const stats = fs.statSync(filePath);
+        if (now - stats.mtimeMs > expiryTime) {
+          fs.unlinkSync(filePath);
+          console.log(`Cleaned up expired local download: ${file}`);
+        }
+      }
+    }
+  } catch (err: any) {
+    console.warn("Cleanup of old downloads failed:", err.message);
+  }
+}
+
+// Get metadata using yt-dlp as a fallback
+async function getMetadataWithYtDlp(url: string) {
+  try {
+    console.log(`Invoking yt-dlp metadata extraction for: ${url}`);
+    const { stdout } = await execFileAsync("./yt-dlp", ["-j", "--no-playlist", url], { timeout: 12000 });
+    const data = JSON.parse(stdout);
+    
+    let thumbnail = "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?auto=format&fit=crop&w=800&q=80";
+    if (data.thumbnail) {
+      thumbnail = data.thumbnail;
+    } else if (data.thumbnails && data.thumbnails.length) {
+      thumbnail = data.thumbnails[data.thumbnails.length - 1].url;
+    }
+
+    return {
+      title: data.title || data.fulltitle || "Unknown Media",
+      thumbnail: thumbnail,
+      duration: data.duration || 0,
+      source: data.extractor_key || data.extractor || "Web Link",
+      fileType: data.vcodec === "none" ? "audio" : "video"
+    };
+  } catch (error: any) {
+    console.warn("yt-dlp fallback metadata extraction failed:", error.message);
+    return null;
+  }
+}
+
+// Download media using yt-dlp
+async function downloadWithYtDlp(url: string, options: { isAudioOnly: boolean; videoQuality?: string; audioFormat?: string; jobId: string }) {
+  const { isAudioOnly, videoQuality = "1080", audioFormat = "mp3", jobId } = options;
+  const args = ["--no-playlist"];
+  
+  if (isAudioOnly) {
+    args.push("-x");
+    const mappedFormat = audioFormat === "ogg" ? "opus" : audioFormat;
+    args.push("--audio-format", mappedFormat);
+    args.push("--audio-quality", "0");
+    args.push("-o", `${DOWNLOADS_DIR}/${jobId}.%(ext)s`);
+  } else {
+    const qualityStr = videoQuality === "2160" ? "2160" : videoQuality;
+    args.push("-f", `bestvideo[height<=${qualityStr}]+bestaudio/best[ext=m4a]/best`);
+    args.push("--merge-output-format", "mp4");
+    args.push("-o", `${DOWNLOADS_DIR}/${jobId}.%(ext)s`);
+  }
+
+  args.push(url);
+
+  console.log(`Running local yt-dlp download with args:`, args);
+  
+  await execFileAsync("./yt-dlp", args, { timeout: 180000 });
+  
+  const files = fs.readdirSync(DOWNLOADS_DIR);
+  const prefix = `${jobId}.`;
+  const matchedFile = files.find(f => f.startsWith(prefix));
+  
+  if (!matchedFile) {
+    throw new Error("Downloaded file not found on disk");
+  }
+
+  const ext = matchedFile.substring(prefix.length);
+  return {
+    filePath: path.join(DOWNLOADS_DIR, matchedFile),
+    ext
+  };
+}
 
 // Custom fetch helper with AbortController to enforce tight timeouts on external metadata endpoints
 async function fetchWithTimeout(url: string, options: any = {}, timeoutMs = 3000) {
@@ -184,6 +283,17 @@ app.post("/api/media-info", async (req: express.Request, res: express.Response):
       }
     }
 
+    if (title === "Unknown Media" || source === "Generic Link" || title === "Web Media") {
+      const ytDlpMeta = await getMetadataWithYtDlp(url);
+      if (ytDlpMeta) {
+        title = ytDlpMeta.title;
+        thumbnail = ytDlpMeta.thumbnail;
+        duration = ytDlpMeta.duration;
+        source = ytDlpMeta.source;
+        fileType = ytDlpMeta.fileType as any;
+      }
+    }
+
     res.json({
       url,
       title,
@@ -193,6 +303,18 @@ app.post("/api/media-info", async (req: express.Request, res: express.Response):
       fileType
     });
   } catch (error: any) {
+    console.warn("API media-info scraper failed, trying yt-dlp fallback:", error.message);
+    const ytDlpMeta = await getMetadataWithYtDlp(url);
+    if (ytDlpMeta) {
+      return res.json({
+        url,
+        title: ytDlpMeta.title,
+        thumbnail: ytDlpMeta.thumbnail,
+        duration: ytDlpMeta.duration,
+        source: ytDlpMeta.source,
+        fileType: ytDlpMeta.fileType
+      });
+    }
     res.status(400).json({ error: "Invalid URL or failed to fetch metadata: " + error.message });
   }
 });
@@ -311,9 +433,35 @@ app.post("/api/download", async (req: express.Request, res: express.Response): P
     });
   }
 
-  res.status(502).json({
-    error: `Media processor is temporarily busy or rate-limited. Details: ${lastError || "Unknown service interruption."}`
-  });
+  // Fall back to our super powerful local yt-dlp binary!
+  try {
+    console.log(`Cobalt mirrors failed or returned rate limits. Falling back to local yt-dlp...`);
+    
+    // Clean up downloads folder to manage disk space
+    cleanOldDownloads();
+    
+    const serverJobId = Math.random().toString(36).substring(2, 10);
+    
+    const ytDlpResult = await downloadWithYtDlp(url, {
+      isAudioOnly: !!isAudioOnly,
+      videoQuality: videoQuality ? videoQuality.toString() : "1080",
+      audioFormat: audioFormat ? audioFormat.toString() : "mp3",
+      jobId: serverJobId
+    });
+
+    console.log(`Local yt-dlp download completed successfully! File is saved at: ${ytDlpResult.filePath}`);
+    
+    return res.json({
+      success: true,
+      status: "redirect",
+      url: `/api/local-media?id=${serverJobId}&ext=${ytDlpResult.ext}`
+    });
+  } catch (ytDlpError: any) {
+    console.error("Local yt-dlp download fallback also failed:", ytDlpError.message);
+    res.status(502).json({
+      error: `Media processor is temporarily busy or rate-limited. Details: ${lastError || "Unknown service interruption."} (Local Fallback Error: ${ytDlpError.message})`
+    });
+  }
 });
 
 // Endpoint to proxy downloads to bypass CORS and force direct file saving in browser
@@ -326,7 +474,12 @@ app.get("/api/proxy-download", async (req: express.Request, res: express.Respons
   }
 
   try {
-    const response = await fetch(fileUrl, {
+    let targetUrl = fileUrl;
+    if (fileUrl.startsWith("/")) {
+      targetUrl = `http://127.0.0.1:${PORT}${fileUrl}`;
+    }
+    
+    const response = await fetch(targetUrl, {
       headers: {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
       }
@@ -356,6 +509,22 @@ app.get("/api/proxy-download", async (req: express.Request, res: express.Respons
     console.error("Proxy download error:", error);
     res.status(500).send(`Server-side proxy error: ${error.message}`);
   }
+});
+
+// Endpoint to serve local downloads produced by the yt-dlp fallback
+app.get("/api/local-media", (req: express.Request, res: express.Response): any => {
+  const { id, ext } = req.query;
+  if (!id || !ext) {
+    return res.status(400).send("Parameters 'id' and 'ext' are required");
+  }
+
+  const filePath = path.join(DOWNLOADS_DIR, `${id}.${ext}`);
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).send("Requested media file not found or has expired");
+  }
+
+  // Force direct attachment download with the correct extension
+  res.download(filePath, `downloaded-media.${ext}`);
 });
 
 async function startServer() {
