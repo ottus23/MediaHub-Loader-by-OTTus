@@ -44,11 +44,29 @@ function cleanOldDownloads() {
   }
 }
 
+// Normalize URLs for yt-dlp to bypass platform-specific extraction blocks
+function normalizeUrlForYtDlp(url: string): string {
+  try {
+    const parsed = new URL(url);
+    if (parsed.hostname.includes("vimeo.com") && !parsed.hostname.includes("player.vimeo.com")) {
+      const match = parsed.pathname.match(/\/(\d+)(?:\/|\?|$)/);
+      if (match) {
+        const videoId = match[1];
+        return `https://player.vimeo.com/video/${videoId}`;
+      }
+    }
+  } catch (err) {
+    // Ignore and return original
+  }
+  return url;
+}
+
 // Get metadata using yt-dlp as a fallback
 async function getMetadataWithYtDlp(url: string) {
   try {
-    console.log(`Invoking yt-dlp metadata extraction for: ${url}`);
-    const { stdout } = await execFileAsync("./yt-dlp", ["-j", "--no-playlist", url], { timeout: 12000 });
+    const targetUrl = normalizeUrlForYtDlp(url);
+    console.log(`Invoking yt-dlp metadata extraction for: ${targetUrl}`);
+    const { stdout } = await execFileAsync("./yt-dlp", ["-j", "--no-playlist", "--js-runtimes", "node", targetUrl], { timeout: 12000 });
     const data = JSON.parse(stdout);
     
     let thumbnail = "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?auto=format&fit=crop&w=800&q=80";
@@ -74,7 +92,7 @@ async function getMetadataWithYtDlp(url: string) {
 // Download media using yt-dlp
 async function downloadWithYtDlp(url: string, options: { isAudioOnly: boolean; videoQuality?: string; audioFormat?: string; jobId: string }) {
   const { isAudioOnly, videoQuality = "1080", audioFormat = "mp3", jobId } = options;
-  const args = ["--no-playlist"];
+  const args = ["--no-playlist", "--js-runtimes", "node"];
   
   if (isAudioOnly) {
     args.push("-x");
@@ -89,7 +107,8 @@ async function downloadWithYtDlp(url: string, options: { isAudioOnly: boolean; v
     args.push("-o", `${DOWNLOADS_DIR}/${jobId}.%(ext)s`);
   }
 
-  args.push(url);
+  const targetUrl = normalizeUrlForYtDlp(url);
+  args.push(targetUrl);
 
   console.log(`Running local yt-dlp download with args:`, args);
   
@@ -513,7 +532,7 @@ app.get("/api/proxy-download", async (req: express.Request, res: express.Respons
 
 // Endpoint to serve local downloads produced by the yt-dlp fallback
 app.get("/api/local-media", (req: express.Request, res: express.Response): any => {
-  const { id, ext } = req.query;
+  const { id, ext, filename } = req.query;
   if (!id || !ext) {
     return res.status(400).send("Parameters 'id' and 'ext' are required");
   }
@@ -523,8 +542,9 @@ app.get("/api/local-media", (req: express.Request, res: express.Response): any =
     return res.status(404).send("Requested media file not found or has expired");
   }
 
+  const downloadName = filename ? (filename.toString().endsWith(`.${ext}`) ? filename.toString() : `${filename}.${ext}`) : `downloaded-media.${ext}`;
   // Force direct attachment download with the correct extension
-  res.download(filePath, `downloaded-media.${ext}`);
+  res.download(filePath, downloadName);
 });
 
 async function startServer() {

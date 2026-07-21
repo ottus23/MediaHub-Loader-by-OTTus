@@ -473,11 +473,18 @@ export default function App() {
   const triggerBrowserSave = (directUrl: string, fileName: string) => {
     if (!directUrl) return;
     
-    // Create direct proxy URL which overrides header to attachment download
-    const proxyUrl = `/api/proxy-download?url=${encodeURIComponent(directUrl)}&filename=${encodeURIComponent(fileName)}`;
+    // Determine if the URL is local or remote
+    let downloadUrl = "";
+    if (directUrl.startsWith("/")) {
+      // Local media path, append filename query parameter for direct download
+      downloadUrl = `${directUrl}&filename=${encodeURIComponent(fileName)}`;
+    } else {
+      // Remote media path, proxy to bypass CORS and force direct download
+      downloadUrl = `/api/proxy-download?url=${encodeURIComponent(directUrl)}&filename=${encodeURIComponent(fileName)}`;
+    }
     
     const anchor = document.createElement("a");
-    anchor.href = proxyUrl;
+    anchor.href = downloadUrl;
     anchor.setAttribute("download", fileName);
     document.body.appendChild(anchor);
     anchor.click();
