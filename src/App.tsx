@@ -55,6 +55,11 @@ export default function App() {
     return localStorage.getItem("mediahub_custom_server_url") || "";
   });
 
+  // Load initial naming pattern from localStorage
+  const [namingPattern, setNamingPattern] = useState<string>(() => {
+    return localStorage.getItem("mediahub_naming_pattern") || "default";
+  });
+
   // Save changes to localStorage
   useEffect(() => {
     localStorage.setItem("mediahub_selected_server", selectedServer);
@@ -63,6 +68,23 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem("mediahub_custom_server_url", customServerUrl);
   }, [customServerUrl]);
+
+  useEffect(() => {
+    localStorage.setItem("mediahub_naming_pattern", namingPattern);
+  }, [namingPattern]);
+
+  // Update existing parsed filenames when the naming pattern changes
+  useEffect(() => {
+    setJobs(prev => prev.map(j => {
+      if (j.title && j.title !== "Analyzing Link...") {
+        return {
+          ...j,
+          fileName: generateFileName(j.title, j.options, j.source)
+        };
+      }
+      return j;
+    }));
+  }, [namingPattern]);
   
   // Global settings for batch processing
   const [settings, setSettings] = useState<GlobalSettings>({
@@ -230,7 +252,7 @@ export default function App() {
             fileType: meta.fileType || j.fileType,
             duration: meta.duration || 0,
             sizeBytes,
-            fileName: generateFileName(meta.title || "Untitled Media", j.options)
+            fileName: generateFileName(meta.title || "Untitled Media", j.options, meta.source || "Web Link")
           };
         }
         return j;
@@ -250,13 +272,58 @@ export default function App() {
     }
   };
 
+  // Helper to get formatted date
+  const getFormattedDate = (): string => {
+    const d = new Date();
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
+  // Helper to get epoch timestamp
+  const getTimestamp = (): string => {
+    return String(Math.floor(Date.now() / 1000));
+  };
+
   // Helper to generate sanitized output file name
-  const generateFileName = (title: string, options: DownloadOptions): string => {
-    const sanitized = title.replace(/[/\\?%*:|"<>]/g, "").substring(0, 60).trim();
+  const generateFileName = (title: string, options: DownloadOptions, source?: string): string => {
+    let sanitized = title.replace(/[/\\?%*:|"<>]/g, "").substring(0, 60).trim();
+    if (!sanitized) {
+      sanitized = "media";
+    }
+
+    let finalTitle = sanitized;
+    const dateStr = getFormattedDate();
+    const tsStr = getTimestamp();
+
+    switch (namingPattern) {
+      case "date-prefix":
+        finalTitle = `${dateStr} - ${sanitized}`;
+        break;
+      case "timestamp-suffix":
+        finalTitle = `${sanitized} - ${tsStr}`;
+        break;
+      case "site-source-prefix":
+        const cleanSource = source && source !== "Resolving..." ? source : "Web";
+        finalTitle = `${cleanSource} - ${sanitized}`;
+        break;
+      case "slugified":
+        finalTitle = sanitized
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "-")
+          .replace(/(^-|-$)+/g, "");
+        if (!finalTitle) finalTitle = "media";
+        break;
+      case "default":
+      default:
+        break;
+    }
+
     if (options.isAudioOnly) {
-      return `${sanitized}.${options.audioFormat}`;
+      return `${finalTitle}.${options.audioFormat}`;
     } else {
-      return `${sanitized}.mp4`; // standard mp4 wrapper
+      return `${finalTitle}.mp4`; // standard mp4 wrapper
     }
   };
 
@@ -267,7 +334,7 @@ export default function App() {
         const newOptions = { ...j.options, ...updates };
         const fileType = newOptions.isAudioOnly ? "audio" : "video";
         const sizeBytes = estimateFileSize(j.duration, newOptions);
-        const fileName = generateFileName(j.title, newOptions);
+        const fileName = generateFileName(j.title, newOptions, j.source);
         return {
           ...j,
           options: newOptions,
@@ -456,7 +523,7 @@ export default function App() {
           audioFormat
         };
         const sizeBytes = estimateFileSize(j.duration, newOptions);
-        const fileName = generateFileName(j.title, newOptions);
+        const fileName = generateFileName(j.title, newOptions, j.source);
         return {
           ...j,
           options: newOptions,
@@ -623,6 +690,32 @@ export default function App() {
                         <option value="480">480p (SD)</option>
                       </select>
                     </div>
+                  </div>
+
+                  <div className="mt-3">
+                    <label className="block text-[10px] text-gray-400 font-mono mb-1 uppercase">File Naming Pattern</label>
+                    <select
+                      value={namingPattern}
+                      onChange={(e) => setNamingPattern(e.target.value)}
+                      className="w-full bg-gray-50 border border-gray-200 rounded-lg p-2 text-xs text-black focus:outline-none focus:ring-1 focus:ring-black cursor-pointer"
+                    >
+                      <option value="default">📋 Default (Original Title)</option>
+                      <option value="date-prefix">📅 Date-Prefixed (YYYY-MM-DD - Title)</option>
+                      <option value="timestamp-suffix">⏱️ Timestamped (Title - Epoch)</option>
+                      <option value="site-source-prefix">🌐 Site-Source-Prefixed (Platform - Title)</option>
+                      <option value="slugified">🔗 Slugified Web-Safe (original-title)</option>
+                    </select>
+                  </div>
+
+                  <div className="mt-2 text-[10px] text-gray-400 italic bg-gray-50 p-2 rounded border border-gray-150 flex items-center justify-between">
+                    <span>Pattern Example:</span>
+                    <span className="font-mono text-black font-medium">
+                      {namingPattern === "default" && "My Video.mp4"}
+                      {namingPattern === "date-prefix" && `${getFormattedDate()} - My Video.mp4`}
+                      {namingPattern === "timestamp-suffix" && `My Video - ${getTimestamp()}.mp4`}
+                      {namingPattern === "site-source-prefix" && "YouTube - My Video.mp4"}
+                      {namingPattern === "slugified" && "my-video.mp4"}
+                    </span>
                   </div>
 
                   <div className="mt-4 flex items-center justify-between bg-gray-50 p-2.5 rounded-xl border border-gray-250">
@@ -958,6 +1051,12 @@ export default function App() {
                           <span className="block text-[10px] text-gray-400 font-mono mt-0.5 truncate max-w-xs sm:max-w-md">
                             {job.url}
                           </span>
+                          {job.fileName && (
+                            <span className="inline-flex items-center space-x-1.5 text-[10px] text-gray-500 font-mono mt-1 bg-gray-50 border border-gray-150 py-0.5 px-2 rounded-md w-fit max-w-xs sm:max-w-md truncate" title={job.fileName}>
+                              <span className="w-1.5 h-1.5 rounded-full bg-black shrink-0"></span>
+                              <span className="truncate">Saved as: {job.fileName}</span>
+                            </span>
+                          )}
                         </div>
 
                         {/* Dropdowns / config options inside individual cards */}
