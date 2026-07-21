@@ -60,6 +60,10 @@ export default function App() {
     return localStorage.getItem("mediahub_naming_pattern") || "default";
   });
 
+  const [youtubeCookies, setYoutubeCookies] = useState<string>(() => {
+    return localStorage.getItem("mediahub_youtube_cookies") || "";
+  });
+
   // Save changes to localStorage
   useEffect(() => {
     localStorage.setItem("mediahub_selected_server", selectedServer);
@@ -72,6 +76,10 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem("mediahub_naming_pattern", namingPattern);
   }, [namingPattern]);
+
+  useEffect(() => {
+    localStorage.setItem("mediahub_youtube_cookies", youtubeCookies);
+  }, [youtubeCookies]);
 
   // Update existing parsed filenames when the naming pattern changes
   useEffect(() => {
@@ -231,7 +239,7 @@ export default function App() {
       const response = await fetch("/api/media-info", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url })
+        body: JSON.stringify({ url, youtubeCookies })
       });
 
       let meta;
@@ -417,7 +425,8 @@ export default function App() {
           audioFormat: job.options.audioFormat,
           isAudioOnly: job.options.isAudioOnly,
           selectedServer,
-          customServerUrl
+          customServerUrl,
+          youtubeCookies
         })
       });
 
@@ -941,6 +950,23 @@ export default function App() {
                     </span>
                   )}
                 </div>
+              </div>
+
+              <div className="pt-2 border-t border-gray-100 space-y-1.5">
+                <label className="block text-[10px] text-gray-400 font-mono uppercase flex items-center justify-between">
+                  <span>🔑 YouTube Bot Bypass Cookies (Netscape Format)</span>
+                  <span className="text-gray-300 font-normal normal-case">Optional</span>
+                </label>
+                <textarea
+                  placeholder="# Netscape HTTP Cookie File&#10;.youtube.com	TRUE	/	TRUE	0	PSD2	...&#10;Or paste your Netscape cookies format text here"
+                  value={youtubeCookies}
+                  onChange={(e) => setYoutubeCookies(e.target.value)}
+                  rows={3}
+                  className="w-full bg-gray-50 border border-gray-200 rounded-lg p-2 text-[11px] text-black focus:outline-none focus:ring-1 focus:ring-black font-mono leading-tight resize-none"
+                />
+                <p className="text-[10px] text-gray-400 leading-tight pt-1">
+                  Hosted cloud environments (like Cloud Run) are aggressively blocked by YouTube bot-checks. To fix this, export cookies from your browser (using extensions like <i>Get cookies.txt LOCALLY</i>) and paste them here to download seamlessly.
+                </p>
               </div>
             </div>
           </div>

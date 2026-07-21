@@ -64,11 +64,21 @@ function normalizeUrlForYtDlp(url: string): string {
 }
 
 // Get metadata using yt-dlp as a fallback
-async function getMetadataWithYtDlp(url: string) {
+async function getMetadataWithYtDlp(url: string, cookiesContent?: string) {
+  let cookieFilePath = "";
   try {
     const targetUrl = normalizeUrlForYtDlp(url);
+    const args = ["-j", "--no-playlist", "--js-runtimes", "node"];
+    
+    if (cookiesContent && cookiesContent.trim()) {
+      cookieFilePath = path.join("/tmp", `cookies_meta_${Math.random().toString(36).substring(2, 10)}.txt`);
+      fs.writeFileSync(cookieFilePath, cookiesContent.trim(), "utf8");
+      args.push("--cookies", cookieFilePath);
+    }
+    
+    args.push(targetUrl);
     console.log(`Invoking yt-dlp metadata extraction for: ${targetUrl}`);
-    const { stdout } = await execFileAsync("./yt-dlp", ["-j", "--no-playlist", "--js-runtimes", "node", targetUrl], { timeout: 12000 });
+    const { stdout } = await execFileAsync("./yt-dlp", args, { timeout: 12000 });
     const data = JSON.parse(stdout);
     
     let thumbnail = "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?auto=format&fit=crop&w=800&q=80";
@@ -88,14 +98,29 @@ async function getMetadataWithYtDlp(url: string) {
   } catch (error: any) {
     console.warn("yt-dlp fallback metadata extraction failed:", error.message);
     return null;
+  } finally {
+    if (cookieFilePath && fs.existsSync(cookieFilePath)) {
+      try {
+        fs.unlinkSync(cookieFilePath);
+      } catch (err) {
+        console.warn("Failed to delete temporary cookie file:", err);
+      }
+    }
   }
 }
 
 // Download media using yt-dlp
-async function downloadWithYtDlp(url: string, options: { isAudioOnly: boolean; videoQuality?: string; audioFormat?: string; jobId: string }) {
-  const { isAudioOnly, videoQuality = "1080", audioFormat = "mp3", jobId } = options;
+async function downloadWithYtDlp(url: string, options: { isAudioOnly: boolean; videoQuality?: string; audioFormat?: string; jobId: string; cookiesContent?: string }) {
+  const { isAudioOnly, videoQuality = "1080", audioFormat = "mp3", jobId, cookiesContent } = options;
   const args = ["--no-playlist", "--js-runtimes", "node"];
+  let cookieFilePath = "";
   
+  if (cookiesContent && cookiesContent.trim()) {
+    cookieFilePath = path.join("/tmp", `cookies_dl_${Math.random().toString(36).substring(2, 10)}.txt`);
+    fs.writeFileSync(cookieFilePath, cookiesContent.trim(), "utf8");
+    args.push("--cookies", cookieFilePath);
+  }
+
   if (isAudioOnly) {
     args.push("-x");
     const mappedFormat = audioFormat === "ogg" ? "opus" : audioFormat;
@@ -114,21 +139,31 @@ async function downloadWithYtDlp(url: string, options: { isAudioOnly: boolean; v
 
   console.log(`Running local yt-dlp download with args:`, args);
   
-  await execFileAsync("./yt-dlp", args, { timeout: 180000 });
-  
-  const files = fs.readdirSync(DOWNLOADS_DIR);
-  const prefix = `${jobId}.`;
-  const matchedFile = files.find(f => f.startsWith(prefix));
-  
-  if (!matchedFile) {
-    throw new Error("Downloaded file not found on disk");
-  }
+  try {
+    await execFileAsync("./yt-dlp", args, { timeout: 180000 });
+    
+    const files = fs.readdirSync(DOWNLOADS_DIR);
+    const prefix = `${jobId}.`;
+    const matchedFile = files.find(f => f.startsWith(prefix));
+    
+    if (!matchedFile) {
+      throw new Error("Downloaded file not found on disk");
+    }
 
-  const ext = matchedFile.substring(prefix.length);
-  return {
-    filePath: path.join(DOWNLOADS_DIR, matchedFile),
-    ext
-  };
+    const ext = matchedFile.substring(prefix.length);
+    return {
+      filePath: path.join(DOWNLOADS_DIR, matchedFile),
+      ext
+    };
+  } finally {
+    if (cookieFilePath && fs.existsSync(cookieFilePath)) {
+      try {
+        fs.unlinkSync(cookieFilePath);
+      } catch (err) {
+        console.warn("Failed to delete temporary cookie file:", err);
+      }
+    }
+  }
 }
 
 // Custom fetch helper with AbortController to enforce tight timeouts on external metadata endpoints
@@ -169,7 +204,7 @@ app.get("/api/health", (req, res) => {
 
 // Endpoint to resolve media metadata (title, source, type, thumbnail, etc.)
 app.post("/api/media-info", async (req: express.Request, res: express.Response): Promise<any> => {
-  const { url } = req.body;
+  const { url, youtubeCookies } = req.body;
   if (!url) {
     return res.status(400).json({ error: "URL is required" });
   }
@@ -305,7 +340,7 @@ app.post("/api/media-info", async (req: express.Request, res: express.Response):
     }
 
     if (title === "Unknown Media" || source === "Generic Link" || title === "Web Media") {
-      const ytDlpMeta = await getMetadataWithYtDlp(url);
+      const ytDlpMeta = await getMetadataWithYtDlp(url, youtubeCookies);
       if (ytDlpMeta) {
         title = ytDlpMeta.title;
         thumbnail = ytDlpMeta.thumbnail;
@@ -325,7 +360,7 @@ app.post("/api/media-info", async (req: express.Request, res: express.Response):
     });
   } catch (error: any) {
     console.warn("API media-info scraper failed, trying yt-dlp fallback:", error.message);
-    const ytDlpMeta = await getMetadataWithYtDlp(url);
+    const ytDlpMeta = await getMetadataWithYtDlp(url, youtubeCookies);
     if (ytDlpMeta) {
       return res.json({
         url,
@@ -342,7 +377,7 @@ app.post("/api/media-info", async (req: express.Request, res: express.Response):
 
 // Endpoint to process download via Cobalt API (with fallbacks)
 app.post("/api/download", async (req: express.Request, res: express.Response): Promise<any> => {
-  const { url, videoQuality = "1080", audioFormat = "mp3", isAudioOnly = false, selectedServer, customServerUrl } = req.body;
+  const { url, videoQuality = "1080", audioFormat = "mp3", isAudioOnly = false, selectedServer, customServerUrl, youtubeCookies } = req.body;
 
   if (!url) {
     return res.status(400).json({ error: "URL is required" });
@@ -467,7 +502,8 @@ app.post("/api/download", async (req: express.Request, res: express.Response): P
       isAudioOnly: !!isAudioOnly,
       videoQuality: videoQuality ? videoQuality.toString() : "1080",
       audioFormat: audioFormat ? audioFormat.toString() : "mp3",
-      jobId: serverJobId
+      jobId: serverJobId,
+      cookiesContent: youtubeCookies
     });
 
     console.log(`Local yt-dlp download completed successfully! File is saved at: ${ytDlpResult.filePath}`);
