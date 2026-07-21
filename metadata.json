@@ -1,0 +1,6 @@
+{
+  "name": "High-Quality Batch Media Downloader",
+  "description": "An ultra-clean, full-stack media downloader featuring high-quality audio and video extraction, multiple resolutions, and fast batch link processing.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
