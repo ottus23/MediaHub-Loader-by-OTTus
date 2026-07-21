@@ -15,7 +15,14 @@ app.use(express.json());
 const COBALT_INSTANCES = [
   "https://api.cobalt.tools",
   "https://cobalt.api.red",
-  "https://co.wukko.me"
+  "https://co.wukko.me",
+  "https://cobalt.v0.sh",
+  "https://api.cobalt.club",
+  "https://cobalt.k6.cx",
+  "https://cobalt.unlocked.link",
+  "https://cobalt.orion-dev.fr",
+  "https://cobalt-api.lunes.host",
+  "https://cobalt.smartgoku.net"
 ];
 
 // Health Check
@@ -175,15 +182,31 @@ app.post("/api/media-info", async (req: express.Request, res: express.Response):
 
 // Endpoint to process download via Cobalt API (with fallbacks)
 app.post("/api/download", async (req: express.Request, res: express.Response): Promise<any> => {
-  const { url, videoQuality = "1080", audioFormat = "mp3", isAudioOnly = false } = req.body;
+  const { url, videoQuality = "1080", audioFormat = "mp3", isAudioOnly = false, selectedServer, customServerUrl } = req.body;
 
   if (!url) {
     return res.status(400).json({ error: "URL is required" });
   }
 
-  // Fallback try loop across multiple Cobalt instances
+  // Build the array of Cobalt instances to try, prioritizing user configuration
+  let instancesToTry = [...COBALT_INSTANCES];
+  if (selectedServer && selectedServer !== "auto") {
+    let targetServer = selectedServer;
+    if (selectedServer === "custom" && customServerUrl) {
+      targetServer = customServerUrl.trim();
+    }
+    
+    // Ensure the targeted server has valid URL format
+    if (targetServer.startsWith("http://") || targetServer.startsWith("https://")) {
+      // Remove any trailing slash to ensure clean request concatenation
+      targetServer = targetServer.replace(/\/+$/, "");
+      instancesToTry = [targetServer, ...instancesToTry.filter(inst => inst !== targetServer)];
+    }
+  }
+
+  // Fallback try loop across prioritized Cobalt instances
   let lastError = "";
-  for (const instance of COBALT_INSTANCES) {
+  for (const instance of instancesToTry) {
     try {
       console.log(`Trying Cobalt instance: ${instance} for URL: ${url}`);
       const cobaltPayload = {

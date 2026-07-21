@@ -28,10 +28,41 @@ import {
 import { motion, AnimatePresence } from "motion/react";
 import { DownloadJob, DownloadOptions, GlobalSettings, JobStatus } from "./types";
 
+const PUBLIC_SERVERS = [
+  { id: "auto", name: "⚡ Auto-Fallback Router (Quickest & Safest)" },
+  { id: "https://api.cobalt.tools", name: "Cobalt Official (api.cobalt.tools)" },
+  { id: "https://cobalt.api.red", name: "Mirror Red (cobalt.api.red)" },
+  { id: "https://co.wukko.me", name: "Mirror Wukko (co.wukko.me)" },
+  { id: "https://cobalt.v0.sh", name: "Mirror V0 (cobalt.v0.sh)" },
+  { id: "https://api.cobalt.club", name: "Cobalt Club (api.cobalt.club)" },
+  { id: "https://cobalt.k6.cx", name: "Mirror K6 (cobalt.k6.cx)" },
+  { id: "https://cobalt.unlocked.link", name: "Unlocked Mirror (cobalt.unlocked.link)" },
+  { id: "https://cobalt.orion-dev.fr", name: "Orion Mirror (cobalt.orion-dev.fr)" },
+  { id: "https://cobalt-api.lunes.host", name: "Luna Mirror (cobalt-api.lunes.host)" },
+  { id: "custom", name: "⚙️ Custom Self-Hosted API Server" }
+];
+
 export default function App() {
   const [jobs, setJobs] = useState<DownloadJob[]>([]);
   const [rawLinks, setRawLinks] = useState<string>("");
   const [activeTab, setActiveTab] = useState<"download" | "batch" | "guide">("download");
+
+  // Load initial server settings from localStorage
+  const [selectedServer, setSelectedServer] = useState<string>(() => {
+    return localStorage.getItem("mediahub_selected_server") || "auto";
+  });
+  const [customServerUrl, setCustomServerUrl] = useState<string>(() => {
+    return localStorage.getItem("mediahub_custom_server_url") || "";
+  });
+
+  // Save changes to localStorage
+  useEffect(() => {
+    localStorage.setItem("mediahub_selected_server", selectedServer);
+  }, [selectedServer]);
+
+  useEffect(() => {
+    localStorage.setItem("mediahub_custom_server_url", customServerUrl);
+  }, [customServerUrl]);
   
   // Global settings for batch processing
   const [settings, setSettings] = useState<GlobalSettings>({
@@ -264,7 +295,9 @@ export default function App() {
           url: job.url,
           videoQuality: job.options.videoQuality,
           audioFormat: job.options.audioFormat,
-          isAudioOnly: job.options.isAudioOnly
+          isAudioOnly: job.options.isAudioOnly,
+          selectedServer,
+          customServerUrl
         })
       });
 
@@ -725,6 +758,68 @@ export default function App() {
               </motion.div>
             )}
 
+          </div>
+
+          {/* API Bypass Server Settings Card */}
+          <div className="bg-white rounded-2xl border border-gray-200 p-5 space-y-4 shadow-[0_2px_8px_-3px_rgba(0,0,0,0.05)]">
+            <h3 className="font-display font-semibold text-xs text-gray-500 uppercase tracking-wider flex items-center space-x-1.5">
+              <Database className="w-3.5 h-3.5 text-black" />
+              <span>Bypass Processor Server Routing</span>
+            </h3>
+            
+            <div className="space-y-3">
+              <div>
+                <label className="block text-[10px] text-gray-400 font-mono uppercase mb-1">
+                  Processor API Server
+                </label>
+                <select
+                  value={selectedServer}
+                  onChange={(e) => setSelectedServer(e.target.value)}
+                  className="w-full bg-gray-50 border border-gray-200 rounded-lg p-2.5 text-xs text-black focus:outline-none focus:ring-1 focus:ring-black cursor-pointer"
+                >
+                  {PUBLIC_SERVERS.map(srv => (
+                    <option key={srv.id} value={srv.id}>{srv.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              {selectedServer === "custom" && (
+                <motion.div
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: "auto" }}
+                  className="space-y-1"
+                >
+                  <label className="block text-[10px] text-gray-400 font-mono uppercase">
+                    Custom Self-Hosted API URL
+                  </label>
+                  <input
+                    type="url"
+                    placeholder="https://api.your-cobalt-instance.com"
+                    value={customServerUrl}
+                    onChange={(e) => setCustomServerUrl(e.target.value)}
+                    className="w-full bg-gray-50 border border-gray-200 rounded-lg p-2.5 text-xs text-black focus:outline-none focus:ring-1 focus:ring-black font-mono"
+                  />
+                  <p className="text-[10px] text-gray-400 leading-tight pt-1">
+                    Enter the root URL of your self-hosted Cobalt API. Must start with http:// or https://
+                  </p>
+                </motion.div>
+              )}
+
+              <div className="bg-gray-50 p-3 rounded-xl border border-gray-150 flex items-start space-x-2">
+                <CloudLightning className="w-4 h-4 text-black shrink-0 mt-0.5 animate-pulse" />
+                <div className="text-[11px] text-gray-500 leading-relaxed">
+                  {selectedServer === "auto" ? (
+                    <span>
+                      <b>Auto-Fallback Router Active:</b> If a server is down or rate-limited, the system automatically cycles through 10+ public servers in milliseconds to guarantee safe, ad-free, high-speed downloads.
+                    </span>
+                  ) : (
+                    <span>
+                      <b>Manual Pinning Active:</b> Downloads will prioritize the selected instance. If it fails, our fallback router will still auto-safeguard your download with alternative mirrors.
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
           </div>
 
           {/* Quick-Action Queue Controller Panel */}
