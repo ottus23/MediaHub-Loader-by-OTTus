@@ -198,8 +198,6 @@ app.post("/api/download", async (req: express.Request, res: express.Response): P
     
     // Ensure the targeted server has valid URL format
     if (targetServer.startsWith("http://") || targetServer.startsWith("https://")) {
-      // Remove any trailing slash to ensure clean request concatenation
-      targetServer = targetServer.replace(/\/+$/, "");
       instancesToTry = [targetServer, ...instancesToTry.filter(inst => inst !== targetServer)];
     }
   }
@@ -207,52 +205,77 @@ app.post("/api/download", async (req: express.Request, res: express.Response): P
   // Fallback try loop across prioritized Cobalt instances
   let lastError = "";
   for (const instance of instancesToTry) {
-    try {
-      console.log(`Trying Cobalt instance: ${instance} for URL: ${url}`);
-      const cobaltPayload = {
-        url,
-        videoQuality: videoQuality.toString(),
-        audioFormat,
-        isAudioOnly: !!isAudioOnly,
-        filenamePattern: "classic",
-        isNoTTWatermark: true
-      };
+    const baseUrl = instance.trim().replace(/\/+$/, "");
+    // Try root (v7/v10), /api/json (v6), and /api as safe redundant fallbacks
+    const endpoints = [baseUrl, `${baseUrl}/api/json`, `${baseUrl}/api`];
 
-      const response = await fetch(instance, {
-        method: "POST",
-        headers: {
-          "Accept": "application/json",
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify(cobaltPayload)
-      });
+    for (const endpoint of endpoints) {
+      try {
+        console.log(`Trying Cobalt endpoint: ${endpoint} for URL: ${url}`);
+        
+        // Multi-version unified payload (combining both old and new Cobalt fields)
+        const cobaltPayload = {
+          url,
+          videoQuality: videoQuality.toString(),
+          vQuality: videoQuality.toString(),
+          audioFormat,
+          aFormat: audioFormat,
+          isAudioOnly: !!isAudioOnly,
+          audioOnly: !!isAudioOnly,
+          downloadMode: isAudioOnly ? "audio" : "video",
+          filenamePattern: "classic",
+          isNoTTWatermark: true,
+          tiktokH265: true,
+          dubLang: false
+        };
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error(`Cobalt instance ${instance} failed:`, errorText);
-        lastError = errorText || `HTTP error ${response.status}`;
-        continue; // try next instance
+        const response = await fetch(endpoint, {
+          method: "POST",
+          headers: {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            // Mimic high-trust modern Chrome browser to bypass Cloudflare and WAF protections on public mirrors
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Origin": "https://cobalt.tools",
+            "Referer": "https://cobalt.tools/",
+            "sec-ch-ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
+            "sec-fetch-dest": "empty",
+            "sec-fetch-mode": "cors",
+            "sec-fetch-site": "cross-site"
+          },
+          body: JSON.stringify(cobaltPayload)
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.warn(`Cobalt endpoint ${endpoint} failed with HTTP ${response.status}:`, errorText.substring(0, 200));
+          lastError = errorText || `HTTP error ${response.status}`;
+          continue; // try next endpoint/instance
+        }
+
+        const data: any = await response.json();
+        if (data.status === "error") {
+          console.warn(`Cobalt error payload from ${endpoint}:`, data.text);
+          lastError = data.text;
+          continue; // try next endpoint/instance
+        }
+
+        // Success! We received either a download URL or a picker list (like TikTok carousel images)
+        console.log(`Successfully extracted download URL using endpoint: ${endpoint}`);
+        return res.json({
+          success: true,
+          status: data.status,
+          url: data.url, // For standard success, streaming, or redirects
+          picker: data.picker, // Array of files (images/videos)
+          audio: data.audio // Audio URL if separate
+        });
+
+      } catch (err: any) {
+        console.warn(`Network/parsing error on ${endpoint}:`, err.message);
+        lastError = err.message;
       }
-
-      const data = await response.json();
-      if (data.status === "error") {
-        console.error(`Cobalt error from ${instance}:`, data.text);
-        lastError = data.text;
-        continue; // try next instance
-      }
-
-      // Success! We received either a download URL or a picker list (like TikTok carousel images)
-      return res.json({
-        success: true,
-        status: data.status,
-        url: data.url, // For standard success, streaming, or redirects
-        picker: data.picker, // Array of files (images/videos)
-        audio: data.audio // Audio URL if separate
-      });
-
-    } catch (err: any) {
-      console.error(`Network error with cobalt instance ${instance}:`, err.message);
-      lastError = err.message;
     }
   }
 
