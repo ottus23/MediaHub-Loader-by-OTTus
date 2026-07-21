@@ -11,6 +11,23 @@ const PORT = 3000;
 
 app.use(express.json());
 
+// Custom fetch helper with AbortController to enforce tight timeouts on external metadata endpoints
+async function fetchWithTimeout(url: string, options: any = {}, timeoutMs = 3000) {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal
+    });
+    clearTimeout(id);
+    return response;
+  } catch (error) {
+    clearTimeout(id);
+    throw error;
+  }
+}
+
 // List of public Cobalt instances for redundancy
 const COBALT_INSTANCES = [
   "https://api.cobalt.tools",
@@ -68,7 +85,7 @@ app.post("/api/media-info", async (req: express.Request, res: express.Response):
 
       try {
         // Scrape title from youtube video page
-        const response = await fetch(url, {
+        const response = await fetchWithTimeout(url, {
           headers: {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
           }
@@ -87,7 +104,7 @@ app.post("/api/media-info", async (req: express.Request, res: express.Response):
       source = "Vimeo";
       try {
         const oembedUrl = `https://vimeo.com/api/oembed.json?url=${encodeURIComponent(url)}`;
-        const response = await fetch(oembedUrl);
+        const response = await fetchWithTimeout(oembedUrl);
         if (response.ok) {
           const data = await response.json();
           title = data.title || "Vimeo Video";
@@ -100,7 +117,7 @@ app.post("/api/media-info", async (req: express.Request, res: express.Response):
     } else if (hostname.includes("tiktok.com")) {
       source = "TikTok";
       try {
-        const response = await fetch(url, {
+        const response = await fetchWithTimeout(url, {
           headers: {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
           }
@@ -119,7 +136,7 @@ app.post("/api/media-info", async (req: express.Request, res: express.Response):
       source = "SoundCloud";
       fileType = "audio";
       try {
-        const response = await fetch(url, {
+        const response = await fetchWithTimeout(url, {
           headers: {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
           }
@@ -147,7 +164,7 @@ app.post("/api/media-info", async (req: express.Request, res: express.Response):
         source = "Direct Video Link";
       } else {
         try {
-          const response = await fetch(url, {
+          const response = await fetchWithTimeout(url, {
             headers: {
               "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             }

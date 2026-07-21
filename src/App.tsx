@@ -234,11 +234,18 @@ export default function App() {
         body: JSON.stringify({ url })
       });
 
-      if (!response.ok) {
-        throw new Error("Failed to resolve URL meta information");
+      let meta;
+      if (response.ok) {
+        meta = await response.json();
+      } else {
+        console.warn("Media info endpoint returned a non-200 response, using graceful client fallbacks.");
+        meta = {
+          title: "Media Link (Ready)",
+          source: "Web Link",
+          fileType: "video",
+          duration: 0
+        };
       }
-
-      const meta = await response.json();
       
       setJobs(prev => prev.map(j => {
         if (j.id === jobId) {
@@ -264,11 +271,24 @@ export default function App() {
       }
 
     } catch (err: any) {
-      setJobs(prev => prev.map(j => j.id === jobId ? { 
-        ...j, 
-        status: "failed", 
-        error: "Unable to analyze media page. Check link format or platform availability." 
-      } : j));
+      console.warn("Failed to analyze media link. Transitioning to ready with fallbacks so download can proceed.", err);
+      // Even if network is completely down or metadata scraper fails, let the user proceed to download
+      setJobs(prev => prev.map(j => {
+        if (j.id === jobId) {
+          const fallbackTitle = "Media Link (Ready)";
+          const sizeBytes = estimateFileSize(0, j.options);
+          return {
+            ...j,
+            status: "ready",
+            title: fallbackTitle,
+            source: "Web Link",
+            duration: 0,
+            sizeBytes,
+            fileName: generateFileName(fallbackTitle, j.options, "Web Link")
+          };
+        }
+        return j;
+      }));
     }
   };
 
